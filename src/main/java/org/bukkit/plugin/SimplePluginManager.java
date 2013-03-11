@@ -4,12 +4,9 @@ import java.io.File;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
-import java.util.Collection;
 import java.util.HashMap;
 import java.util.HashSet;
-import java.util.Iterator;
 import java.util.LinkedHashMap;
-import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -33,15 +30,17 @@ import org.bukkit.permissions.PermissionDefault;
 import org.bukkit.util.FileUtil;
 
 import com.google.common.collect.ImmutableSet;
+import java.util.Iterator;
+import java.util.logging.Logger;
 
 /**
  * Handles all plugin management from the Server
  */
 public final class SimplePluginManager implements PluginManager {
+
     private final Server server;
     private final Map<Pattern, PluginLoader> fileAssociations = new HashMap<Pattern, PluginLoader>();
-    private final List<Plugin> plugins = new ArrayList<Plugin>();
-    private final Map<String, Plugin> lookupNames = new HashMap<String, Plugin>();
+    private final Map<String, PluginEnvironment> lookupNames = new HashMap<String, PluginEnvironment>();
     private static File updateDirectory = null;
     private final SimpleCommandMap commandMap;
     private final Map<String, Permission> permissions = new HashMap<String, Permission>();
@@ -62,7 +61,8 @@ public final class SimplePluginManager implements PluginManager {
      * Registers the specified plugin loader
      *
      * @param loader Class name of the PluginLoader to register
-     * @throws IllegalArgumentException Thrown when the given Class is not a valid PluginLoader
+     * @throws IllegalArgumentException Thrown when the given Class is not a
+     * valid PluginLoader
      */
     public void registerInterface(Class<? extends PluginLoader> loader) throws IllegalArgumentException {
         PluginLoader instance;
@@ -96,6 +96,10 @@ public final class SimplePluginManager implements PluginManager {
     /**
      * Loads the plugins contained within the specified directory
      *
+     * Note: Plugins cannot depend, soft depend or load before plugins from
+     * different directories. Dependencies will cause the plugin to fail to
+     * load, soft dependencies and load before will be ignored.
+     *
      * @param directory Directory to check for plugins
      * @return A list of all plugins loaded
      */
@@ -111,11 +115,10 @@ public final class SimplePluginManager implements PluginManager {
         }
 
         Map<String, File> plugins = new HashMap<String, File>();
-        Set<String> loadedPlugins = new HashSet<String>();
-        Map<String, Collection<String>> dependencies = new HashMap<String, Collection<String>>();
-        Map<String, Collection<String>> softDependencies = new HashMap<String, Collection<String>>();
+        Map<String, PluginEnvironment> environments = new HashMap<String, PluginEnvironment>();
+        // Set<String> loadedPlugins = new HashSet<String>();
 
-        // This is where it figures out all possible plugins
+        // Load PluginDescriptionFiles for all Plugins and create PluginDependencies
         for (File file : directory.listFiles()) {
             PluginLoader loader = null;
             for (Pattern filter : filters) {
@@ -125,156 +128,69 @@ public final class SimplePluginManager implements PluginManager {
                 }
             }
 
-            if (loader == null) continue;
-
-            PluginDescriptionFile description = null;
-            try {
-                description = loader.getPluginDescription(file);
-            } catch (InvalidDescriptionException ex) {
-                server.getLogger().log(Level.SEVERE, "Could not load '" + file.getPath() + "' in folder '" + directory.getPath() + "'", ex);
+            if (loader == null) {
                 continue;
             }
 
-            plugins.put(description.getName(), file);
-
-            Collection<String> softDependencySet = description.getSoftDepend();
-            if (softDependencySet != null) {
-                if (softDependencies.containsKey(description.getName())) {
-                    // Duplicates do not matter, they will be removed together if applicable
-                    softDependencies.get(description.getName()).addAll(softDependencySet);
-                } else {
-                    softDependencies.put(description.getName(), new LinkedList<String>(softDependencySet));
+            try {
+                PluginEnvironment environment = loader.loadPluginEnvironment(file);
+                if (environments.containsKey(environment.getPluginName())) {
+                    // Can't load two plugins with the same name, it's nonsensical.
+                    server.getLogger().log(Level.SEVERE, "Could not load '" + file.getName() + "' in folder '" + directory.getPath() + "'", 
+                            new IllegalStateException("Plugin " + environment.getPluginName() + " already loaded from " + environments.get(environment.getPluginName()).getPluginFile().getPath()));
+                    continue;
                 }
-            }
-
-            Collection<String> dependencySet = description.getDepend();
-            if (dependencySet != null) {
-                dependencies.put(description.getName(), new LinkedList<String>(dependencySet));
-            }
-
-            Collection<String> loadBeforeSet = description.getLoadBefore();
-            if (loadBeforeSet != null) {
-                for (String loadBeforeTarget : loadBeforeSet) {
-                    if (softDependencies.containsKey(loadBeforeTarget)) {
-                        softDependencies.get(loadBeforeTarget).add(description.getName());
-                    } else {
-                        // softDependencies is never iterated, so 'ghost' plugins aren't an issue
-                        Collection<String> shortSoftDependency = new LinkedList<String>();
-                        shortSoftDependency.add(description.getName());
-                        softDependencies.put(loadBeforeTarget, shortSoftDependency);
-                    }
-                }
+                environments.put(environment.getPluginName(), environment);
+            } catch (InvalidDescriptionException ex) {
+                server.getLogger().log(Level.SEVERE, "Could not load '" + file.getName() + "' in folder '" + directory.getPath() + "'", ex);
+                continue;
+            } catch (InvalidPluginException ex) {
+                server.getLogger().log(Level.SEVERE, "Could not load '" + file.getName() + "' in folder '" + directory.getPath() + "'", ex);
             }
         }
 
-        while (!plugins.isEmpty()) {
-            boolean missingDependency = true;
-            Iterator<String> pluginIterator = plugins.keySet().iterator();
+        // Configure PluginDependencies for each plugin, removing any with
+        // invalid dependencies.
 
-            while (pluginIterator.hasNext()) {
-                String plugin = pluginIterator.next();
+        // Avoid CME exceptions by copying environments.values()
+        for (PluginEnvironment environment : environments.values()) {
+            PluginDescriptionFile descriptor = environment.getPluginDescriptionFile();
 
-                if (dependencies.containsKey(plugin)) {
-                    Iterator<String> dependencyIterator = dependencies.get(plugin).iterator();
-
-                    while (dependencyIterator.hasNext()) {
-                        String dependency = dependencyIterator.next();
-
-                        // Dependency loaded
-                        if (loadedPlugins.contains(dependency)) {
-                            dependencyIterator.remove();
-
-                        // We have a dependency not found
-                        } else if (!plugins.containsKey(dependency)) {
-                            missingDependency = false;
-                            File file = plugins.get(plugin);
-                            pluginIterator.remove();
-                            softDependencies.remove(plugin);
-                            dependencies.remove(plugin);
-
-                            server.getLogger().log(
-                                Level.SEVERE,
-                                "Could not load '" + file.getPath() + "' in folder '" + directory.getPath() + "'",
-                                new UnknownDependencyException(dependency));
-                            break;
-                        }
-                    }
-
-                    if (dependencies.containsKey(plugin) && dependencies.get(plugin).isEmpty()) {
-                        dependencies.remove(plugin);
-                    }
-                }
-                if (softDependencies.containsKey(plugin)) {
-                    Iterator<String> softDependencyIterator = softDependencies.get(plugin).iterator();
-
-                    while (softDependencyIterator.hasNext()) {
-                        String softDependency = softDependencyIterator.next();
-
-                        // Soft depend is no longer around
-                        if (!plugins.containsKey(softDependency)) {
-                            softDependencyIterator.remove();
-                        }
-                    }
-
-                    if (softDependencies.get(plugin).isEmpty()) {
-                        softDependencies.remove(plugin);
-                    }
-                }
-                if (!(dependencies.containsKey(plugin) || softDependencies.containsKey(plugin)) && plugins.containsKey(plugin)) {
-                    // We're clear to load, no more soft or hard dependencies left
-                    File file = plugins.get(plugin);
-                    pluginIterator.remove();
-                    missingDependency = false;
-
-                    try {
-                        result.add(loadPlugin(file));
-                        loadedPlugins.add(plugin);
-                        continue;
-                    } catch (InvalidPluginException ex) {
-                        server.getLogger().log(Level.SEVERE, "Could not load '" + file.getPath() + "' in folder '" + directory.getPath() + "'", ex);
-                    }
-                }
+            for (String j : descriptor.getDepend()) {
+                new Dependency(Dependency.Type.DEPEND, environment, environments.get(j));
             }
 
-            if (missingDependency) {
-                // We now iterate over plugins until something loads
-                // This loop will ignore soft dependencies
-                pluginIterator = plugins.keySet().iterator();
+            for (String j : descriptor.getSoftDepend()) {
+                new Dependency(Dependency.Type.SOFT_DEPEND, environment, environments.get(j));
+            }
 
-                while (pluginIterator.hasNext()) {
-                    String plugin = pluginIterator.next();
-
-                    if (!dependencies.containsKey(plugin)) {
-                        softDependencies.remove(plugin);
-                        missingDependency = false;
-                        File file = plugins.get(plugin);
-                        pluginIterator.remove();
-
-                        try {
-                            result.add(loadPlugin(file));
-                            loadedPlugins.add(plugin);
-                            break;
-                        } catch (InvalidPluginException ex) {
-                            server.getLogger().log(Level.SEVERE, "Could not load '" + file.getPath() + "' in folder '" + directory.getPath() + "'", ex);
-                        }
-                    }
-                }
-                // We have no plugins left without a depend
-                if (missingDependency) {
-                    softDependencies.clear();
-                    dependencies.clear();
-                    Iterator<File> failedPluginIterator = plugins.values().iterator();
-
-                    while (failedPluginIterator.hasNext()) {
-                        File file = failedPluginIterator.next();
-                        failedPluginIterator.remove();
-                        server.getLogger().log(Level.SEVERE, "Could not load '" + file.getPath() + "' in folder '" + directory.getPath() + "': circular dependency detected");
-                    }
-                }
+            for (String j : descriptor.getLoadBefore()) {
+                new Dependency(Dependency.Type.LOAD_AFTER, environment, environments.get(j));
             }
         }
-
-        return result.toArray(new Plugin[result.size()]);
+        boolean valid;
+        do {
+            valid = true;
+            Iterator<PluginEnvironment> i = environments.values().iterator();
+            while (i.hasNext()) {
+                PluginEnvironment e = i.next();
+                try {
+                    e.validateDependencies();
+                } catch (InvalidPluginException ex) {
+                    server.getLogger().log(Level.SEVERE,"");
+                }
+            }
+        } while (!valid);
+        /*
+         try {
+         result.add(loadPlugin(file));
+         loadedPlugins.add(plugin);
+         break;
+         } catch (InvalidPluginException ex) {
+         server.getLogger().log(Level.SEVERE, "Could not load '" + file.getPath() + "' in folder '" + directory.getPath() + "'", ex);
+         }
+         server.getLogger().log(Level.SEVERE, "Could not load '" + file.getPath() + "' in folder '" + directory.getPath() + "': circular dependency detected");
+         */
     }
 
     /**
@@ -284,10 +200,15 @@ public final class SimplePluginManager implements PluginManager {
      *
      * @param file File containing the plugin to load
      * @return The Plugin loaded, or null if it was invalid
-     * @throws InvalidPluginException Thrown when the specified file is not a valid plugin
-     * @throws UnknownDependencyException If a required dependency could not be found
+     * @throws InvalidPluginException Thrown when the specified file is not a
+     * valid plugin
+     * @throws UnknownDependencyException If a required dependency could not be
+     * found
      */
     public synchronized Plugin loadPlugin(File file) throws InvalidPluginException, UnknownDependencyException {
+        // TODO
+        throw new UnsupportedOperationException();
+        /*
         Validate.notNull(file, "File cannot be null");
 
         checkUpdate(file);
@@ -312,6 +233,7 @@ public final class SimplePluginManager implements PluginManager {
         }
 
         return result;
+        */
     }
 
     private void checkUpdate(File file) {
@@ -423,7 +345,7 @@ public final class SimplePluginManager implements PluginManager {
             try {
                 server.getMessenger().unregisterIncomingPluginChannel(plugin);
                 server.getMessenger().unregisterOutgoingPluginChannel(plugin);
-            } catch(Throwable ex) {
+            } catch (Throwable ex) {
                 server.getLogger().log(Level.SEVERE, "Error occurred (in the plugin loader) while unregistering plugin channels for " + plugin.getDescription().getFullName() + " (Is it up to date?)", ex);
             }
         }
@@ -485,8 +407,7 @@ public final class SimplePluginManager implements PluginManager {
                             "Nag author(s): '%s' of '%s' about the following: %s",
                             plugin.getDescription().getAuthors(),
                             plugin.getDescription().getFullName(),
-                            ex.getMessage()
-                            ));
+                            ex.getMessage()));
                 }
             } catch (Throwable ex) {
                 server.getLogger().log(Level.SEVERE, "Could not pass event " + event.getEventName() + " to " + registration.getPlugin().getDescription().getFullName(), ex);
@@ -510,14 +431,16 @@ public final class SimplePluginManager implements PluginManager {
     }
 
     /**
-     * Registers the given event to the specified listener using a directly passed EventExecutor
+     * Registers the given event to the specified listener using a directly
+     * passed EventExecutor
      *
      * @param event Event class to register
      * @param listener PlayerListener to register
      * @param priority Priority of this event
      * @param executor EventExecutor to register
      * @param plugin Plugin to register
-     * @param ignoreCancelled Do not call executor if event was already cancelled
+     * @param ignoreCancelled Do not call executor if event was already
+     * cancelled
      */
     public void registerEvent(Class<? extends Event> event, Listener listener, EventPriority priority, EventExecutor executor, Plugin plugin, boolean ignoreCancelled) {
         Validate.notNull(listener, "Listener cannot be null");
@@ -550,10 +473,21 @@ public final class SimplePluginManager implements PluginManager {
         try {
             clazz.getDeclaredMethod("getHandlerList");
             return clazz;
+
+
+
+
+
+
+
+
+
+
         } catch (NoSuchMethodException e) {
             if (clazz.getSuperclass() != null
                     && !clazz.getSuperclass().equals(Event.class)
-                    && Event.class.isAssignableFrom(clazz.getSuperclass())) {
+                    && Event.class
+                    .isAssignableFrom(clazz.getSuperclass())) {
                 return getRegistrationClass(clazz.getSuperclass().asSubclass(Event.class));
             } else {
                 throw new IllegalPluginAccessException("Unable to find handler list for event " + clazz.getName());

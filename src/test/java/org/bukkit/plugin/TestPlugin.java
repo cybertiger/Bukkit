@@ -1,13 +1,9 @@
 package org.bukkit.plugin;
 
-import java.io.File;
-import java.io.InputStream;
 import java.util.List;
 
-import org.bukkit.Server;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandSender;
-import org.bukkit.configuration.file.FileConfiguration;
 import org.bukkit.generator.ChunkGenerator;
 
 import com.avaje.ebean.EbeanServer;
@@ -17,60 +13,9 @@ public class TestPlugin extends PluginBase {
 
     final private String pluginName;
 
-    public TestPlugin(String pluginName) {
+    public TestPlugin(String pluginName, PluginEnvironment<? extends PluginEnvironment> environment) {
+        super(environment);
         this.pluginName = pluginName;
-    }
-
-    public void setEnabled(boolean enabled) {
-        this.enabled = enabled;
-    }
-
-    public File getDataFolder() {
-        throw new UnsupportedOperationException("Not supported.");
-    }
-
-    public PluginDescriptionFile getDescription() {
-        return new PluginDescriptionFile(pluginName, "1.0", "test.test");
-    }
-
-    public FileConfiguration getConfig() {
-        throw new UnsupportedOperationException("Not supported.");
-    }
-
-    public InputStream getResource(String filename) {
-        throw new UnsupportedOperationException("Not supported.");
-    }
-
-    public void saveConfig() {
-        throw new UnsupportedOperationException("Not supported.");
-    }
-
-    public void saveDefaultConfig() {
-        throw new UnsupportedOperationException("Not supported.");
-    }
-
-    public void saveResource(String resourcePath, boolean replace) {
-        throw new UnsupportedOperationException("Not supported.");
-    }
-
-    public void reloadConfig() {
-        throw new UnsupportedOperationException("Not supported.");
-    }
-
-    public PluginLogger getLogger() {
-        throw new UnsupportedOperationException("Not supported.");
-    }
-
-    public PluginLoader getPluginLoader() {
-        throw new UnsupportedOperationException("Not supported.");
-    }
-
-    public Server getServer() {
-        throw new UnsupportedOperationException("Not supported.");
-    }
-
-    public boolean isEnabled() {
-        return enabled;
     }
 
     public void onDisable() {

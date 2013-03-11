@@ -18,6 +18,13 @@ import com.avaje.ebean.EbeanServer;
  */
 public interface Plugin extends TabExecutor {
     /**
+     * Returns the environment for this plugin.
+     * 
+     * @return the environment.
+     */
+    public PluginEnvironment getPluginEnvironment();
+    
+    /**
      * Returns the folder that the plugin data's files are located in. The
      * folder may not yet exist.
      *
@@ -161,4 +168,19 @@ public interface Plugin extends TabExecutor {
      * @return name of the plugin
      */
     public String getName();
+
+    /**
+     * Returns the file which contains this plugin
+     *
+     * @return File containing this plugin
+     */
+    public File getFile();
+
+    /**
+     * Returns the ClassLoader for this plugin.
+     * 
+     * @return the class loader.
+     */
+    public PluginClassLoader getClassLoader();
+
 }

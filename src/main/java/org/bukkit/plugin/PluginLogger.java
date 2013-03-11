@@ -17,10 +17,10 @@ public class PluginLogger extends Logger {
      * Creates a new PluginLogger that extracts the name from a plugin.
      * @param context A reference to the plugin
      */
-    public PluginLogger(Plugin context) {
+    public PluginLogger(PluginEnvironment context) {
         super(context.getClass().getCanonicalName(), null);
-        String prefix = context.getDescription().getPrefix();
-        pluginName = prefix != null ? new StringBuilder().append("[").append(prefix).append("] ").toString() : "[" + context.getDescription().getName() + "] ";
+        String prefix = context.getPluginDescriptionFile().getPrefix();
+        pluginName = prefix != null ? new StringBuilder().append("[").append(prefix).append("] ").toString() : "[" + context.getPluginName() + "] ";
         setParent(context.getServer().getLogger());
         setLevel(Level.ALL);
     }
